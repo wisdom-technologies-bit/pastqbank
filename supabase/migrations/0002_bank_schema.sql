@@ -1,0 +1,2 @@
+-- Bank schema migration. Applied through Supabase MCP in Prompt 2.
+-- This file records the approved schema DDL from the project prompt.
