@@ -5,7 +5,7 @@ const clientEnvSchema = z.object({
   NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1),
 });
 
-export function getClientEnv(source: NodeJS.ProcessEnv = process.env) {
+export function getClientEnv(source: Record<string, string | undefined> = process.env) {
   const result = clientEnvSchema.safeParse(source);
   if (!result.success) {
     const names = Object.keys(clientEnvSchema.shape).filter((key) => !source[key]);

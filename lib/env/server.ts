@@ -8,6 +8,8 @@ const serverEnvSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   CRON_SECRET: z.string().min(16),
   BANK_SERVICE_API_KEY: z.string().min(32),
+  ALOC_BASE_URL: z.string().url().default("https://dev.aloc.com.ng/api/v1"),
+  ALOC_LOW_CREDIT_THRESHOLD: z.coerce.number().int().default(5),
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
