@@ -3,8 +3,8 @@ import type { Metadata, Viewport } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'v0 App',
-  description: 'Created with v0',
+  title: 'PastQ Bank',
+  description: 'Internal admin workspace for the Nigerian exam past-questions database.',
   generator: 'v0.app',
   icons: {
     icon: [
