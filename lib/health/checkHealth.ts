@@ -1,6 +1,6 @@
 import "server-only";
 
-import { adminSupabase } from "@/lib/supabase/admin";
+import { getAdminSupabaseClient } from "@/lib/supabase/admin";
 import { getServerEnv } from "@/lib/env/server";
 
 export type HealthResult = {
@@ -14,7 +14,7 @@ export type HealthResult = {
 
 const requiredEnv = ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY", "CRON_SECRET", "BANK_SERVICE_API_KEY"] as const;
 
-export async function checkHealth(client = adminSupabase): Promise<HealthResult> {
+export async function checkHealth(client = getAdminSupabaseClient()) : Promise<HealthResult> {
   const time = new Date().toISOString();
   let missing: string[] = [];
   try { getServerEnv(); } catch {

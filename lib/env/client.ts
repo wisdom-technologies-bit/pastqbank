@@ -14,4 +14,7 @@ export function getClientEnv(source: NodeJS.ProcessEnv = process.env) {
   return result.data;
 }
 
-export const clientEnv = getClientEnv();
+export const clientEnv = getClientEnv({
+  NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+});

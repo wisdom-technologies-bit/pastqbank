@@ -1,7 +1,7 @@
 import "server-only";
 
 import { redirect } from "next/navigation";
-import { adminSupabase } from "@/lib/supabase/admin";
+import { getAdminSupabaseClient } from "@/lib/supabase/admin";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 export async function requireAdmin() {
@@ -9,7 +9,7 @@ export async function requireAdmin() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: admin, error } = await adminSupabase
+  const { data: admin, error } = await getAdminSupabaseClient()
     .from("bank_admins")
     .select("user_id")
     .eq("user_id", user.id)

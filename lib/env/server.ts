@@ -28,4 +28,3 @@ export function getServerEnv(source: NodeJS.ProcessEnv = process.env): ServerEnv
   return result.data;
 }
 
-export const serverEnv = getServerEnv();
