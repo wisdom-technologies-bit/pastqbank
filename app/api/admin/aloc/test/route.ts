@@ -1,0 +1,4 @@
+import { NextResponse } from "next/server";
+import { requireAdmin } from "@/lib/auth/requireAdmin";
+import { fetchQuestions } from "@/lib/providers/aloc/client";
+export async function POST() { try { await requireAdmin(); const result = await fetchQuestions({ examType: "jamb", year: 2019, limit: 1 }); const first = result.questions[0]; return NextResponse.json({ ok: true, keyLabel: result.keyLabel, creditsRemaining: result.creditsRemaining, creditsUsed: result.creditsUsed, questionCount: result.questions.length, firstQuestionId: first?.id ?? null, optionKeys: first?.options ? Object.keys(first.options) : [], hasCorrectAnswer: Boolean(first?.correctAnswer), requestId: result.requestId }); } catch (error) { const message = error instanceof Error ? error.message : "ALOC test failed"; return NextResponse.json({ ok: false, error: error instanceof Error ? error.name : "Error", message }, { status: message.includes("not authorized") ? 403 : 500 }); } }

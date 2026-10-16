@@ -14,6 +14,10 @@ Tables: bank_admins, providers, provider_keys, exams, subjects, topics, question
 
 External cron-job.org routes must send `Authorization: Bearer <CRON_SECRET>`.
 
+## ALOC API keys
+
+Configure keys as `ALOC_API_KEY_1`, `ALOC_API_KEY_2`, and so on. Keys are sorted numerically, rotated when invalid or out of credits, and cooled after rate limits or low rate-limit headers. Exhausted keys are reset to active at the start of the next UTC month; low-credit threshold is configurable with `ALOC_LOW_CREDIT_THRESHOLD`. Keys are discovered at runtime and their secrets are never stored in the database or logged; `provider_keys` stores only the environment-variable name and operational status.
+
 ## First admin
 
 (a) In Supabase Dashboard > Authentication > Users, add a user with email and password.
