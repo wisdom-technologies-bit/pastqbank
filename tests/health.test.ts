@@ -1,0 +1,5 @@
+import { describe, expect, it, vi } from "vitest";
+import { checkHealth } from "@/lib/health/checkHealth";
+
+const env = { NEXT_PUBLIC_SUPABASE_URL: "https://example.supabase.co", NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon", SUPABASE_SERVICE_ROLE_KEY: "service", CRON_SECRET: "1234567890123456", BANK_SERVICE_API_KEY: "12345678901234567890123456789012" };
+describe("checkHealth", () => { it("returns ok when database succeeds", async () => { vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", env.NEXT_PUBLIC_SUPABASE_URL); Object.entries(env).forEach(([key, value]) => vi.stubEnv(key, value)); const client = { from: () => ({ select: vi.fn().mockResolvedValue({ error: null }) }) } as never; expect((await checkHealth(client)).status).toBe("ok"); }); it("returns degraded when database fails", async () => { Object.entries(env).forEach(([key, value]) => vi.stubEnv(key, value)); const client = { from: () => ({ select: vi.fn().mockResolvedValue({ error: new Error("down") }) }) } as never; const result = await checkHealth(client); expect(result.status).toBe("degraded"); expect(result.checks.database.error).toBe("Database unavailable"); }); });
