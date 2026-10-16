@@ -10,7 +10,7 @@ export async function POST() {
     await requireAdmin();
     const result = await fetchQuestions({ examType: "jamb", year: 2019, limit: 1 });
     const first = result.questions[0];
-    return NextResponse.json({ ok: true, keyLabel: result.keyLabel, creditsRemaining: result.creditsRemaining, creditsUsed: result.creditsUsed, questionCount: result.questions.length, firstQuestionId: first?.id ?? null, optionKeys: first?.options ? Object.keys(first.options) : [], hasCorrectAnswer: Boolean(first?.correctAnswer), requestId: result.requestId });
+    return NextResponse.json({ ok: true, keyLabel: result.keyLabel, creditsRemaining: result.creditsRemaining, creditsUsed: result.creditsUsed, questionCount: result.questions.length, invalidCount: result.invalid.length, firstQuestionId: first?.id ?? null, optionKeys: first?.options ? Object.keys(first.options) : [], hasCorrectAnswer: Boolean(first?.correctAnswer), requestId: result.requestId });
   } catch (error) {
     const diagnostics = error as Partial<AlocDiagnostics>;
     const safe = { httpStatus: diagnostics.httpStatus ?? null, alocError: diagnostics.alocError ?? null, attempts: diagnostics.attempts ?? 0, host: diagnostics.host ?? "", snippet: diagnostics.snippet ?? (error instanceof Error ? error.name : "ALOC test failed") };
