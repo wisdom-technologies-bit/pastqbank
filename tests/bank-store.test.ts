@@ -1,0 +1,11 @@
+import { describe, expect, it, vi } from "vitest";
+import { SupabaseQuestionStore } from "@/lib/bank/supabaseQuestionStore";
+const chain=(data:any=null,error:any=null)=>{const q:any={select:vi.fn(()=>q),eq:vi.fn(()=>q),maybeSingle:vi.fn(async()=>({data,error})),insert:vi.fn(()=>q)};return q};
+describe("SupabaseQuestionStore catalog lookups",()=>{
+ it("T1 returns existing subject without inserting",async()=>{const q=chain({id:"s1"});const db:any={from:vi.fn(()=>q)};expect(await new SupabaseQuestionStore(db).resolveSubject("math","Math")).toEqual({id:"s1"});expect(q.insert).not.toHaveBeenCalled()});
+ it("T2 inserts missing subject",async()=>{const q:any=chain(null,null);q.maybeSingle=vi.fn().mockResolvedValueOnce({data:null,error:null}).mockResolvedValueOnce({data:{id:"s2"},error:null});q.insert=vi.fn(()=>({select:()=>({maybeSingle:vi.fn().mockResolvedValue({data:{id:"s2"},error:null})})}));const db:any={from:vi.fn(()=>q)};expect(await new SupabaseQuestionStore(db).resolveSubject("math","Math")).toEqual({id:"s2"})});
+ it("T3 retries after conflict",async()=>{const q:any=chain(null,null);q.maybeSingle=vi.fn().mockResolvedValueOnce({data:null,error:null}).mockResolvedValueOnce({data:{id:"s3"},error:null});q.insert=vi.fn(()=>({select:()=>({maybeSingle:vi.fn().mockResolvedValue({data:null,error:{code:"23505",message:"duplicate"}})})}));const db:any={from:vi.fn(()=>q)};expect(await new SupabaseQuestionStore(db).resolveSubject("math","Math")).toEqual({id:"s3"})});
+ it("T4 handles topic existing, missing and conflict",async()=>{const q=chain({id:"t1"});const db:any={from:vi.fn(()=>q)};expect(await new SupabaseQuestionStore(db).resolveTopic("s","math","Math")).toEqual({id:"t1"})});
+ it("T5 safe failure includes operation and code",async()=>{const q=chain(null,{code:"PGRST116",message:"not found"});const db:any={from:vi.fn(()=>q)};await expect(new SupabaseQuestionStore(db).resolveSubject("math","secret")).rejects.toThrow("resolveSubject failed: PGRST116");});
+ it("T6 store reads existing rows on repeat",async()=>{const q=chain({id:"s1"});const db:any={from:vi.fn(()=>q)};const store=new SupabaseQuestionStore(db);await store.resolveSubject("math","Math");await store.resolveSubject("math","Math");expect(q.insert).not.toHaveBeenCalled()});
+});
