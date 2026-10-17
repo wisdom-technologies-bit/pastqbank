@@ -13,6 +13,6 @@ export class AlocRateLimitedError extends Error {
 }
 export class AlocTransientError extends Error {
   readonly httpStatus!: number | null; readonly alocError!: string | null; readonly attempts!: number; readonly host!: string; readonly snippet!: string;
-  constructor(message = "ALOC service temporarily unavailable", d: Partial<AlocDiagnostics> = {}) { super(message); this.name = "AlocTransientError"; Object.assign(this, diagnostics(d, { httpStatus: null, alocError: null, attempts: 3, host: "", snippet: message })); }
+  constructor(message = "ALOC service temporarily unavailable", d: Partial<AlocDiagnostics> = {}) { super(message); this.name = "AlocTransientError"; Object.assign(this, diagnostics(d, { httpStatus: null, alocError: null, attempts: 2, host: "", snippet: message })); }
 }
 export class AllKeysUnavailableError extends Error { constructor(message: string) { super(message); this.name = "AllKeysUnavailableError"; } }

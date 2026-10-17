@@ -1,36 +1,52 @@
 import "server-only";
 import { getAdminSupabaseClient } from "@/lib/supabase/admin";
-import { fetchQuestions } from "@/lib/providers/aloc/client";
-import { saveQuestions } from "@/lib/bank/saveQuestions";
+import { fetchQuestions as realFetchQuestions } from "@/lib/providers/aloc/client";
+import { saveQuestions as realSaveQuestions } from "@/lib/bank/saveQuestions";
 import { SupabaseQuestionStore } from "@/lib/bank/supabaseQuestionStore";
-import { buildUnits, ImportScopeSchema } from "./plan";
-import { AllKeysUnavailableError, AlocRateLimitedError, AlocTransientError, AlocRequestError } from "@/lib/providers/aloc/errors";
+import { AllKeysUnavailableError, AlocRateLimitedError } from "@/lib/providers/aloc/errors";
+import { COVERAGE } from "./coverage";
 
-export type SliceSummary={idle:boolean;jobId:string|null;status:string|null;pagesFetched:number;requestsMade:number;creditsUsed:number;unitsCompleted:number;stoppedBecause:"budget"|"done"|"paused"|"no_keys"|"rate_limited"|"transient"|"cancelled"|"credit_cap"|"idle"};
-const safe=(e:unknown)=>e instanceof Error?e.message:"Import failed";
-const reportedCredits=(value:unknown)=>Number.isInteger(value)&&Number(value)>0?Number(value):1;
-export async function runSlice(options:{budgetMs?:number;jobId?:string}={}):Promise<SliceSummary>{
- const db=getAdminSupabaseClient(); const budget=options.budgetMs??40000; const cutoff=new Date(Date.now()-120000).toISOString();
- let query=db.from("import_jobs").select("*").in("status",["queued","running"]).order("created_at",{ascending:true}).limit(1); if(options.jobId) query=db.from("import_jobs").select("*").eq("id",options.jobId).limit(1);
- const found=await query; const job=found.data?.[0] as any; if(!job)return idle(options.jobId??null);
- const claimed=await db.from("import_jobs").update({status:"running",started_at:job.started_at??new Date().toISOString()}).eq("id",job.id).or(`status.eq.queued,and(status.eq.running,updated_at.lt.${cutoff})`).select("id").maybeSingle(); if(claimed.error||!claimed.data)return idle(job.id,job.status);
- let scope; try{scope=ImportScopeSchema.parse(job.scope)}catch{await db.from("import_jobs").update({status:"failed",error_summary:"Invalid import scope"}).eq("id",job.id);return {...summary(job.id,"failed",0,0,0,0),stoppedBecause:"transient"};}
- let units=(await db.from("import_units").select("*").eq("job_id",job.id).order("exam_year",{ascending:false})).data as any[]??[]; if(!units.length){const rows=buildUnits(scope).map(u=>({...u,job_id:job.id,status:"pending",pages_fetched:0,questions_seen:0})); if(rows.length)await db.from("import_units").insert(rows); units=(await db.from("import_units").select("*").eq("job_id",job.id).order("exam_year",{ascending:false})).data as any[]??[];}
- let pages=0,requests=0,credits=0,lastRequest=0;
- const totals={discovered_count:job.discovered_count??0,inserted_count:job.inserted_count??0,updated_count:job.updated_count??0,skipped_count:job.skipped_count??0,quarantined_count:job.quarantined_count??0,rejected_count:job.rejected_count??0,requests_made:job.requests_made??0,credits_used:job.credits_used??0};
- const writeTotals=()=>db.from("import_jobs").update(totals).eq("id",job.id);
- while(Date.now()-lastRequest < budget*.85 || lastRequest===0){const fresh=(await db.from("import_jobs").select("status,credits_used").eq("id",job.id).single()).data as any;if(fresh?.status==="paused"||fresh?.status==="cancelled")return {...summary(job.id,fresh.status,pages,requests,credits,0),stoppedBecause:fresh.status};
-  const unit=units.find(u=>u.status==="running")??units.find(u=>u.status==="pending"); if(!unit){await db.from("import_jobs").update({status:"completed",completed_at:new Date().toISOString(),...totals}).eq("id",job.id);return {...summary(job.id,"completed",pages,requests,credits,units.filter(u=>["done","empty","failed"].includes(u.status)).length),stoppedBecause:"done"};}
-  if(lastRequest){const wait=Math.max(0,2200-(Date.now()-lastRequest));if(wait)await new Promise(r=>setTimeout(r,wait));} await db.from("import_units").update({status:"running"}).eq("id",unit.id); lastRequest=Date.now();
-  try{const result=await fetchQuestions({examType:unit.exam_slug,year:unit.exam_year,cursor:unit.cursor,limit:15}); const requestCredits=reportedCredits(result.creditsUsed); requests++;credits+=requestCredits;totals.requests_made++;totals.credits_used+=requestCredits;
-   if(result.empty&&unit.pages_fetched===0){await db.from("import_units").update({status:"empty",pages_fetched:0}).eq("id",unit.id);unit.status="empty";await writeTotals();continue;}
-   const store=new SupabaseQuestionStore(); const saved=await saveQuestions(store,result.questions,{examType:unit.exam_slug,year:unit.exam_year,jobId:job.id}); const fetched=result.questions.length+result.invalid.length; totals.discovered_count+=fetched; totals.inserted_count+=saved.inserted; totals.updated_count+=saved.updated; totals.skipped_count+=saved.skipped; totals.rejected_count+=saved.rejected+result.invalid.length; totals.quarantined_count+=saved.quarantined; await writeTotals(); await db.from("import_units").update({cursor:result.pagination.nextCursor,pages_fetched:(unit.pages_fetched??0)+1,questions_seen:(unit.questions_seen??0)+fetched,status:result.pagination.hasMore?"running":"done",last_error:null}).eq("id",unit.id); unit.cursor=result.pagination.nextCursor;unit.pages_fetched++;unit.questions_seen+=fetched;if(!result.pagination.hasMore)unit.status="done";
-   if(scope.maxCredits&&totals.credits_used>=scope.maxCredits){await db.from("import_jobs").update({status:"paused",error_summary:"Credit cap reached",...totals}).eq("id",job.id);return {...summary(job.id,"paused",pages+1,requests,credits,0),stoppedBecause:"credit_cap"};}
-  }catch(e){const msg=safe(e);await db.from("import_errors").insert({job_id:job.id,unit_id:unit.id,error_code:"unit_fetch_failed",message:msg,payload:null});const count=(await db.from("import_errors").select("id",{count:"exact",head:true}).eq("unit_id",unit.id).eq("error_code","unit_fetch_failed")).count??0;if(count>=5){await db.from("import_units").update({status:"failed",last_error:msg}).eq("id",unit.id);unit.status="failed";}const why=e instanceof AllKeysUnavailableError?"no_keys":e instanceof AlocRateLimitedError?"rate_limited":e instanceof AlocTransientError||e instanceof AlocRequestError?"transient":"transient";if(why==="no_keys")await db.from("import_jobs").update({status:"paused",error_summary:"All ALOC API keys are exhausted or unavailable. Add credits or a key, then press Resume."}).eq("id",job.id);return {...summary(job.id,why==="no_keys"?"paused":"running",pages,requests,credits,0),stoppedBecause:why};}
-  pages++;
+export type PageSummary = { exam:string; year:number; pageNumber:number; questions:number; creditsUsed:number; attempts:number; creditsRemaining:number|null; keyLabel:string|null; empty:boolean };
+export type SliceSummary = { jobId:string|null; stoppedBecause:string|null; pages:PageSummary[]; keysUsed:string[]; discovered:number; inserted:number; updated:number; quarantined:number; requestsMade:number; creditsUsed:number };
+export type ImportDeps = { db:any; fetchQuestions:typeof realFetchQuestions; saveQuestions:typeof realSaveQuestions; createStore:(db:any)=>any; now:()=>number; sleep:(ms:number)=>Promise<void> };
+export const reportedCredits = (value:number|undefined|null) => value ?? 1;
+const ORDER = ["jamb","waec","neco","post_utme"] as const;
+const defaults = ():ImportDeps => ({ db:getAdminSupabaseClient(), fetchQuestions:realFetchQuestions, saveQuestions:realSaveQuestions, createStore:(db)=>new SupabaseQuestionStore(db), now:Date.now, sleep:(ms)=>new Promise(resolve=>setTimeout(resolve,ms)) });
+const get = async (db:any, table:string, id:string) => { const r=await db.from(table).select("*").eq("id",id).maybeSingle(); if(r.error) throw r.error; return r.data; };
+const update = async (db:any, table:string, id:string, values:any) => { const r=await db.from(table).update(values).eq("id",id); if(r.error) throw r.error; };
+function sortUnits(units:any[]) { return [...units].sort((a,b)=> (a.status==="running"?0:1)-(b.status==="running"?0:1) || b.exam_year-a.exam_year || ORDER.indexOf(a.exam_slug)-ORDER.indexOf(b.exam_slug)); }
+function emptySummary(jobId:string|null):SliceSummary { return {jobId,stoppedBecause:null,pages:[],keysUsed:[],discovered:0,inserted:0,updated:0,quarantined:0,requestsMade:0,creditsUsed:0}; }
+export async function runSlice(options:{jobId?:string; budgetMs?:number}, injected?:Partial<ImportDeps>):Promise<SliceSummary> {
+ const deps={...defaults(),...injected}; const budgetMs=options.budgetMs??40000; const sliceStart=deps.now();
+ let jobs=options.jobId?[await get(deps.db,"import_jobs",options.jobId)]:((await deps.db.from("import_jobs").select("*").in("status",["queued","running"]).order("updated_at",{ascending:true}).limit(20)).data??[]).filter((j:any)=>j.status==="queued"||deps.now()-new Date(j.updated_at).getTime()>120000);
+ const job=jobs[0]; if(!job)return emptySummary(null); if(job.status!=="running") await update(deps.db,"import_jobs",job.id,{status:"running",started_at:job.started_at??new Date(deps.now()).toISOString(),updated_at:new Date(deps.now()).toISOString()});
+ const summary=emptySummary(job.id); const units=((await deps.db.from("import_units").select("*").eq("job_id",job.id)).data??[]); const store=deps.createStore(deps.db);
+ const release=async(reason:string)=>{ summary.stoppedBecause=reason; if(["budget","rate_limited","transient"].includes(reason)) await update(deps.db,"import_jobs",job.id,{status:"queued",updated_at:new Date(deps.now()).toISOString()}); };
+ for(const unit of sortUnits(units.filter((u:any)=>!["done","empty","failed"].includes(u.status)))) {
+   const window=(COVERAGE as any)[unit.exam_slug]; if(!window||unit.exam_year<window.from||unit.exam_year>window.to){ unit.status="empty"; await update(deps.db,"import_units",unit.id,{status:"empty",last_error:"outside known coverage window",updated_at:new Date(deps.now()).toISOString()}); continue; }
+   while((deps.now()-sliceStart)+9000<budgetMs) {
+    const pageNumber=(unit.pages_fetched??0)+1;
+    try {
+      const result:any=await deps.fetchQuestions({examType:unit.exam_slug,year:unit.exam_year,cursor:unit.cursor??undefined,limit:15});
+      const questions=result.questions??[]; const meta=result.meta??result; const credits=reportedCredits(meta.creditsUsed ?? (meta.creditsRemainingBefore!=null&&meta.creditsRemainingAfter!=null?Math.max(0,meta.creditsRemainingBefore-meta.creditsRemainingAfter):undefined));
+      const page:PageSummary={exam:unit.exam_slug,year:unit.exam_year,pageNumber,questions:questions.length,creditsUsed:credits,attempts:result.attempts??1,creditsRemaining:meta.creditsRemainingAfter??result.creditsRemainingAfter??null,keyLabel:result.keyLabel??null,empty:questions.length===0}; summary.pages.push(page); summary.requestsMade++; summary.creditsUsed+=credits; summary.discovered+=questions.length; if(page.keyLabel&&!summary.keysUsed.includes(page.keyLabel))summary.keysUsed.push(page.keyLabel); console.log(JSON.stringify({...page,jobId:job.id}));
+      if(page.attempts>1||page.creditsUsed>1) await deps.db.from("import_errors").insert({job_id:job.id,unit_id:unit.id,error_code:"extra_credit_charge",message:`${unit.exam_slug} ${unit.exam_year} page ${pageNumber}: attempts ${page.attempts}, credits ${page.creditsUsed}`});
+      const saved=questions.length?await deps.saveQuestions(store,questions,{examType:unit.exam_slug,year:unit.exam_year,jobId:job.id}):{inserted:0,updated:0,quarantined:0};
+      const nextCursor=result.nextCursor??result.cursor??null; const nextStatus=questions.length===0||!nextCursor?"empty":"running"; unit.status=nextStatus;
+      await update(deps.db,"import_units",unit.id,{cursor:nextCursor,pages_fetched:pageNumber,status:nextStatus,updated_at:new Date(deps.now()).toISOString(),last_error:null});
+      await update(deps.db,"import_jobs",job.id,{discovered_count:(job.discovered_count??0)+summary.discovered,inserted_count:(job.inserted_count??0)+(saved.inserted??0),updated_count:(job.updated_count??0)+(saved.updated??0),quarantined_count:(job.quarantined_count??0)+(saved.quarantined??0),requests_made:(job.requests_made??0)+summary.requestsMade,credits_used:(job.credits_used??0)+summary.creditsUsed,updated_at:new Date(deps.now()).toISOString()});
+      summary.inserted+=saved.inserted??0; summary.updated+=saved.updated??0; summary.quarantined+=saved.quarantined??0; Object.assign(job,{discovered_count:(job.discovered_count??0)+summary.discovered,requests_made:(job.requests_made??0)+summary.requestsMade,credits_used:(job.credits_used??0)+summary.creditsUsed});
+      if(nextStatus!=="running")break;
+      if(job.max_credits!=null&&(job.credits_used??0)>=job.max_credits){await update(deps.db,"import_jobs",job.id,{status:"paused",error_summary:"Credit cap reached",updated_at:new Date(deps.now()).toISOString()});summary.stoppedBecause="credit_cap";return summary;}
+    } catch(error) {
+      if(error instanceof AllKeysUnavailableError){await update(deps.db,"import_jobs",job.id,{status:"paused",error_summary:"All ALOC API keys are exhausted or unavailable. Add credits or a key, then press Resume.",updated_at:new Date(deps.now()).toISOString()});summary.stoppedBecause="no_keys";return summary;}
+      if(error instanceof AlocRateLimitedError){await release("rate_limited");return summary;}
+      const transient=(error as any)?.name==="AlocTransientError"; if(transient){await release("transient");return summary;}
+      const failures=(unit.consecutive_failures??0)+1; await deps.db.from("import_errors").insert({job_id:job.id,unit_id:unit.id,error_code:"unit_fetch_failed",message:`${unit.exam_slug} ${unit.exam_year} page ${pageNumber} failed`}); await update(deps.db,"import_units",unit.id,{consecutive_failures:failures,status:failures>=5?"failed":"running",last_error:"unit fetch failed"}); if(failures>=5)break;
+    }
+   }
+   if(summary.stoppedBecause)return summary;
+   if(deps.now()-sliceStart+9000>=budgetMs){await release("budget");return summary;}
  }
- return {...summary(job.id,"running",pages,requests,credits,0),stoppedBecause:"budget"};
+ const remaining=units.some((u:any)=>!["done","empty","failed"].includes(u.status)); await update(deps.db,"import_jobs",job.id,{status:remaining?"queued":"completed",updated_at:new Date(deps.now()).toISOString()}); return summary;
 }
-function idle(jobId:string|null,status:string|null=null){return {idle:true,jobId,status,pagesFetched:0,requestsMade:0,creditsUsed:0,unitsCompleted:0,stoppedBecause:"idle" as const};}
-function summary(jobId:string,status:string,pagesFetched:number,requestsMade:number,creditsUsed:number,unitsCompleted:number){return {idle:false,jobId,status,pagesFetched,requestsMade,creditsUsed,unitsCompleted,stoppedBecause:"budget" as const};}
-export { reportedCredits };
