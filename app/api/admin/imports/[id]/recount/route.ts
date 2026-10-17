@@ -1,0 +1,4 @@
+import { NextResponse } from "next/server";
+import { requireAdmin } from "@/lib/auth/requireAdmin";
+import { getAdminSupabaseClient } from "@/lib/supabase/admin";
+export async function POST(_:Request,{params}:{params:Promise<{id:string}>}){try{await requireAdmin();const {id}=await params;const db=getAdminSupabaseClient();const units=(await db.from("import_units").select("pages_fetched,questions_seen,status").eq("job_id",id)).data??[];const requests=units.reduce((n,u)=>n+(u.pages_fetched??0)+(u.status==="empty"?1:0),0);const discovered=units.reduce((n,u)=>n+(u.questions_seen??0),0);const result=await db.from("import_jobs").update({requests_made:requests,discovered_count:discovered}).eq("id",id).select("requests_made,discovered_count").single();if(result.error)throw result.error;return NextResponse.json({ok:true,job:result.data});}catch{return NextResponse.json({ok:false,error:"Unable to recalculate totals"},{status:401});}}
