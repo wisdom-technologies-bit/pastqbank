@@ -18,6 +18,10 @@ External cron-job.org routes must send `Authorization: Bearer <CRON_SECRET>`.
 
 Configure keys as `ALOC_API_KEY_1`, `ALOC_API_KEY_2`, and so on. Keys are sorted numerically, rotated when invalid or out of credits, and cooled after rate limits or low rate-limit headers. Exhausted keys are reset to active at the start of the next UTC month; low-credit threshold is configurable with `ALOC_LOW_CREDIT_THRESHOLD`. Keys are discovered at runtime and their secrets are never stored in the database or logged; `provider_keys` stores only the environment-variable name and operational status.
 
+## Import pipeline
+
+ALOC imports sanitise rich text, normalise catalog fields, validate required content, deduplicate by source and content hash, then save published or quarantined rows. Quarantine reasons include `text_empty`, `missing_required_option:X`, `duplicate_option_text`, `answer_missing`, `answer_not_in_options`, `passage_missing`, `bad_image_url`, `bad_year`, and `duplicate_content`. Re-running the same import is idempotent; quarantined and archived questions are never served.
+
 ## First admin
 
 (a) In Supabase Dashboard > Authentication > Users, add a user with email and password.
