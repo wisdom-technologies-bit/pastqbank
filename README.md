@@ -22,6 +22,10 @@ Configure keys as `ALOC_API_KEY_1`, `ALOC_API_KEY_2`, and so on. Keys are sorted
 
 ALOC imports sanitise rich text, normalise catalog fields, validate required content, deduplicate by source and content hash, then save published or quarantined rows. Quarantine reasons include `text_empty`, `missing_required_option:X`, `duplicate_option_text`, `answer_missing`, `answer_not_in_options`, `passage_missing`, `bad_image_url`, `bad_year`, and `duplicate_content`. Re-running the same import is idempotent; quarantined and archived questions are never served.
 
+## Import engine
+
+Imports are autonomous: start one job once from `/admin/imports`, then configure cron-job.org to POST `/api/cron/import-worker` every minute with `Authorization: Bearer <CRON_SECRET>`. Each response contains per-request pages, credits, attempts, remaining credits, and keys used. Slices release queued jobs after budget/rate-limit/transient stops, resume from the stored cursor, process newest years and exams in deterministic order, and automatically resume an exhausted-key pause when keys become available. Coverage windows skip known-empty years without an ALOC request. Use “Import everything (newest to oldest)” to create the full 1988-to-current range.
+
 ## First admin
 
 (a) In Supabase Dashboard > Authentication > Users, add a user with email and password.
