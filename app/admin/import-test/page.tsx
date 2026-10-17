@@ -1,0 +1,1 @@
+import { requireAdmin } from "@/lib/auth/requireAdmin";import { ImportTestClient } from "@/components/admin/import-test-client";export default async function ImportTestPage(){await requireAdmin();return <ImportTestClient/>}

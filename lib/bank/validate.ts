@@ -1,0 +1,4 @@
+import "server-only";
+import { toPlainText } from "./sanitize";
+import type { NormalizedQuestion } from "./normalize";
+export function validateNormalized(n:NormalizedQuestion){const reasons:string[]=[];if(toPlainText(n.text).length<5&&!n.image_url)reasons.push("text_empty");for(const k of ["A","B","C","D"])if(!n.options[k])reasons.push(`missing_required_option:${k}`);const vals=Object.values(n.options).map(v=>toPlainText(v).toLowerCase().trim());if(new Set(vals).size!==vals.length)reasons.push("duplicate_option_text");if(!n.correct_answer)reasons.push("answer_missing");else if(!n.options[n.correct_answer])reasons.push("answer_not_in_options");if(n.has_passage&&!n.section)reasons.push("passage_missing");if(n.imageInvalid)reasons.push("bad_image_url");if(n.year<1980||n.year>2100)reasons.push("bad_year");return {status:reasons.length?"quarantined":"published" as const,reasons};}
