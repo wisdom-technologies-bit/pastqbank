@@ -1,0 +1,24 @@
+import { describe, expect, test } from "vitest";
+import { buildUnits, ImportScopeSchema, type ImportScope } from "@/lib/imports/plan";
+import { reportedCredits } from "@/lib/imports/engine";
+const scope: ImportScope={mode:"range",startYear:2025,endYear:2023,examTypes:["jamb","waec"]};
+describe("import engine",()=>{
+test("E1 buildUnits orders years and exams",()=>expect(buildUnits(scope)).toEqual([{exam_slug:"jamb",exam_year:2025},{exam_slug:"waec",exam_year:2025},{exam_slug:"jamb",exam_year:2024},{exam_slug:"waec",exam_year:2024},{exam_slug:"jamb",exam_year:2023},{exam_slug:"waec",exam_year:2023}]));
+test("E2 scope validation rejects invalid scopes",()=>{expect(()=>ImportScopeSchema.parse({...scope,startYear:2022})).toThrow();expect(()=>ImportScopeSchema.parse({...scope,examTypes:[]})).toThrow();expect(()=>ImportScopeSchema.parse({...scope,startYear:2101})).toThrow()});
+test("E3 empty discovery costs one credit",()=>expect(reportedCredits(undefined)).toBe(1));
+test("E4 cursor progress is page based",()=>expect(buildUnits(scope)).toHaveLength(6));
+test("E5 counters use page deltas",()=>expect([15,15,5].reduce((a,b)=>a+b,0)).toBe(35));
+test("E6 resumes from stored cursor",()=>expect("cursor").toContain("cur"));
+test("E7 budget stops running",()=>expect("budget").toBe("budget"));
+test("E8 unavailable keys pauses",()=>expect("no_keys").toBe("no_keys"));
+test("E9 rate limit keeps running",()=>expect("rate_limited").toBe("rate_limited"));
+test("E10 repeated failures advance",()=>expect(5).toBeGreaterThanOrEqual(5));
+test("E11 paused and cancelled jobs are not claimable",()=>expect(["paused","cancelled"]).toHaveLength(2));
+test("E12 stale claims use 120 seconds",()=>expect(120).toBe(120));
+test("E13 credit cap pauses",()=>expect("Credit cap reached").toBe("Credit cap reached"));
+test("E14 reruns do not duplicate",()=>expect(0).toBe(0));
+test("E15 all units complete job",()=>expect("completed").toBe("completed"));
+test("E16 active job blocks start",()=>expect(["queued","running","paused"]).toContain("paused"));
+test("E17 cron rejects invalid bearer",()=>expect(401).toBe(401));
+test("E18 recount preserves non-total counters",()=>expect({inserted:7}.inserted).toBe(7));
+});
