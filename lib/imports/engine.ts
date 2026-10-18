@@ -1,26 +1,27 @@
 import "server-only";
 import { getAdminSupabaseClient } from "@/lib/supabase/admin";
 import { fetchQuestions as realFetchQuestions } from "@/lib/providers/aloc/client";
+import { fetchYearCatalog as realFetchYearCatalog } from "@/lib/providers/aloc/catalog";
 import { saveQuestions as realSaveQuestions } from "@/lib/bank/saveQuestions";
+import { buildPlan, planSummary, type CatalogEntry, type ExamSlug } from "./planner";
 import { SupabaseQuestionStore } from "@/lib/bank/supabaseQuestionStore";
 import { AllKeysUnavailableError, AlocRateLimitedError } from "@/lib/providers/aloc/errors";
-import { COVERAGE } from "./coverage";
-import { ImportScopeSchema, buildUnits } from "./plan";
+import { ImportScopeSchema } from "./plan";
 
 export type PageSummary = { exam: string; year: number; pageNumber: number; questions: number; creditsUsed: number; attempts: number; creditsRemaining: number | null; keyLabel: string | null; empty: boolean };
 export type SliceSummary = { jobId: string | null; stoppedBecause: string | null; pages: PageSummary[]; keysUsed: string[]; discovered: number; inserted: number; updated: number; quarantined: number; requestsMade: number; creditsUsed: number; skipped?: number; rejected?: number };
-export type ImportDeps = { db: any; fetchQuestions: typeof realFetchQuestions; saveQuestions: typeof realSaveQuestions; createStore: (db: any) => any; now: () => number; sleep: (ms: number) => Promise<void> };
+export type ImportDeps = { db: any; fetchQuestions: typeof realFetchQuestions; fetchYearCatalog: typeof realFetchYearCatalog; saveQuestions: typeof realSaveQuestions; createStore: (db: any) => any; now: () => number; sleep: (ms: number) => Promise<void> };
 
 const STALE_MS = 120_000;
 const HEADROOM_MS = 9_000;
 const PACE_MS = 2_200;
-const FINISHED = ["done", "empty", "failed"];
+const FINISHED = ["done", "empty", "failed", "skipped"];
 const ORDER = ["jamb", "waec", "neco", "post_utme"] as const;
 const KEYS_MESSAGE = "All ALOC API keys are exhausted or unavailable. Add credits or a key, then press Resume.";
 
 export const reportedCredits = (value: number | undefined | null) => (Number.isInteger(value as number) && Number(value) > 0 ? Number(value) : 1);
 
-const defaults = (): ImportDeps => ({ db: getAdminSupabaseClient(), fetchQuestions: realFetchQuestions, saveQuestions: realSaveQuestions, createStore: (db) => new SupabaseQuestionStore(db), now: Date.now, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) });
+const defaults = (): ImportDeps => ({ db: getAdminSupabaseClient(), fetchQuestions: realFetchQuestions, fetchYearCatalog: realFetchYearCatalog, saveQuestions: realSaveQuestions, createStore: (db) => new SupabaseQuestionStore(db), now: Date.now, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) });
 const get = async (db: any, table: string, id: string) => { const r = await db.from(table).select("*").eq("id", id).maybeSingle(); if (r.error) throw r.error; return r.data; };
 const update = async (db: any, table: string, id: string, values: any) => { const r = await db.from(table).update(values).eq("id", id); if (r.error) throw r.error; };
 const safeMessage = (error: unknown) => { const raw = error instanceof Error ? error.message : "Import step failed"; return raw.replace(/aloc_[A-Za-z0-9]+|ALOC-[A-Za-z0-9]+|alc_live_[A-Za-z0-9]+/g, "[redacted]").slice(0, 300); };
@@ -37,17 +38,29 @@ export async function runSlice(options: { jobId?: string; budgetMs?: number } = 
   const setIfRunning = async (patch: Record<string, unknown>) => { const r = await db.from("import_jobs").update(patch).eq("id", job.id).eq("status", "running"); if (r.error) throw r.error; };
   const parsedScope = ImportScopeSchema.safeParse(job.scope); if (!parsedScope.success) { await setIfRunning({ status: "failed", error_summary: "Invalid import scope", completed_at: iso() }); summary.stoppedBecause = "failed"; return summary; }
   const cap = parsedScope.data.maxCredits ?? null; const loadUnits = async () => { const r = await db.from("import_units").select("*").eq("job_id", job.id); if (r.error) throw r.error; return (r.data ?? []) as any[]; }; let units = await loadUnits();
-  if (!units.length) { const rows = buildUnits(parsedScope.data).map((u) => ({ job_id: job.id, exam_slug: u.exam_slug, exam_year: u.exam_year, status: "pending" })); for (let i = 0; i < rows.length; i += 200) { const r = await db.from("import_units").insert(rows.slice(i, i + 200)); if (r.error) throw r.error; } units = await loadUnits(); }
+  if (!units.length) {
+    const catalog: CatalogEntry[] = [];
+    for (let year = parsedScope.data.startYear; year >= parsedScope.data.endYear; year--) catalog.push(...await deps.fetchYearCatalog(year));
+    const counts = await db.from("questions").select("exam_year, exams!inner(slug), subjects!inner(slug)").in("exam_year", Array.from({ length: parsedScope.data.startYear - parsedScope.data.endYear + 1 }, (_, i) => parsedScope.data.startYear - i));
+    if (counts.error) throw counts.error;
+    const haveMap = new Map<string, number>();
+    for (const row of counts.data ?? []) { const exam = row.exams?.slug; const subject = row.subjects?.slug; if (exam && subject) { const key = `${exam}:${row.exam_year}:${subject}`; haveMap.set(key, (haveMap.get(key) ?? 0) + 1); } }
+    const plan = buildPlan(catalog, (exam, year, subject) => haveMap.get(`${exam}:${year}:${subject}`) ?? 0, { startYear: parsedScope.data.startYear, endYear: parsedScope.data.endYear, exams: parsedScope.data.examTypes.filter((e): e is ExamSlug => e !== "state") });
+    const rows = plan.map((u) => ({ job_id: job.id, exam_slug: u.exam, exam_year: u.year, subject_slug: u.subject, status: u.needed ? "queued" : "skipped" }));
+    for (let i = 0; i < rows.length; i += 200) { const r = await db.from("import_units").insert(rows.slice(i, i + 200)); if (r.error) throw r.error; }
+    const summaryField = "summary" in job ? { summary: planSummary(plan) } : "metadata" in job ? { metadata: { ...(job.metadata ?? {}), plan: planSummary(plan) } } : {};
+    if (Object.keys(summaryField).length) await update(db, "import_jobs", job.id, summaryField);
+    units = await loadUnits();
+  }
   const totals = { discovered_count: job.discovered_count ?? 0, inserted_count: job.inserted_count ?? 0, updated_count: job.updated_count ?? 0, skipped_count: job.skipped_count ?? 0, quarantined_count: job.quarantined_count ?? 0, rejected_count: job.rejected_count ?? 0, requests_made: job.requests_made ?? 0, credits_used: job.credits_used ?? 0 }; const writeTotals = () => update(db, "import_jobs", job.id, totals); const store = deps.createStore(db); let lastRequestAt = 0;
   for (const unit of sortUnits(units.filter((u) => !FINISHED.includes(u.status)))) {
-    const win = (COVERAGE as any)[unit.exam_slug]; if (!win || unit.exam_year < win.from || unit.exam_year > win.to) { await update(db, "import_units", unit.id, { status: "empty", last_error: "outside known coverage window" }); unit.status = "empty"; continue; }
     while (!FINISHED.includes(unit.status)) {
       if (lastRequestAt > 0) { const wait = PACE_MS - (deps.now() - lastRequestAt); if (wait > 0) await deps.sleep(wait); }
       if (deps.now() - sliceStart + HEADROOM_MS >= budgetMs) { await setIfRunning({ status: "queued" }); summary.stoppedBecause = "budget"; return summary; }
       const fresh = await get(db, "import_jobs", job.id); if (!fresh || fresh.status !== "running") { summary.stoppedBecause = fresh?.status === "cancelled" ? "cancelled" : "paused"; return summary; }
       lastRequestAt = deps.now(); const pageNumber = (unit.pages_fetched ?? 0) + 1;
       try {
-        const result: any = await deps.fetchQuestions({ examType: unit.exam_slug, year: unit.exam_year, cursor: unit.cursor ?? undefined, limit: 15 }); const questions: any[] = result.questions ?? []; const invalid: any[] = result.invalid ?? []; const fetched = questions.length + invalid.length; const pagination = result.pagination ?? {}; const nextCursor: string | null = pagination.nextCursor ?? result.nextCursor ?? null; const more = Boolean(pagination.hasMore ?? result.hasMore ?? nextCursor) && Boolean(nextCursor); const before = typeof result.creditsRemainingBefore === "number" ? result.creditsRemainingBefore : null; const after = typeof result.creditsRemainingAfter === "number" ? result.creditsRemainingAfter : typeof result.creditsRemaining === "number" ? result.creditsRemaining : null; const drop = before !== null && after !== null && before >= after ? before - after : null; const credits = reportedCredits(result.creditsUsed ?? (drop && drop > 0 ? drop : undefined)); const attempts = reportedCredits(result.attempts); const page: PageSummary = { exam: unit.exam_slug, year: unit.exam_year, pageNumber, questions: questions.length, creditsUsed: credits, attempts, creditsRemaining: after, keyLabel: result.keyLabel ?? null, empty: Boolean(result.empty) || fetched === 0 };
+        const result: any = await deps.fetchQuestions({ subject: unit.subject_slug, examType: unit.exam_slug, year: unit.exam_year, cursor: unit.cursor ?? undefined, limit: 15 }); const questions: any[] = result.questions ?? []; const invalid: any[] = result.invalid ?? []; const fetched = questions.length + invalid.length; const pagination = result.pagination ?? {}; const nextCursor: string | null = pagination.nextCursor ?? result.nextCursor ?? null; const more = Boolean(pagination.hasMore ?? result.hasMore ?? nextCursor) && Boolean(nextCursor); const before = typeof result.creditsRemainingBefore === "number" ? result.creditsRemainingBefore : null; const after = typeof result.creditsRemainingAfter === "number" ? result.creditsRemainingAfter : typeof result.creditsRemaining === "number" ? result.creditsRemaining : null; const drop = before !== null && after !== null && before >= after ? before - after : null; const credits = reportedCredits(result.creditsUsed ?? (drop && drop > 0 ? drop : undefined)); const attempts = reportedCredits(result.attempts); const page: PageSummary = { exam: unit.exam_slug, year: unit.exam_year, pageNumber, questions: questions.length, creditsUsed: credits, attempts, creditsRemaining: after, keyLabel: result.keyLabel ?? null, empty: Boolean(result.empty) || fetched === 0 };
         if (summary.pages.length < 60) summary.pages.push(page); summary.requestsMade += 1; summary.creditsUsed += credits; if (page.keyLabel && !summary.keysUsed.includes(page.keyLabel)) summary.keysUsed.push(page.keyLabel); totals.requests_made += 1; totals.credits_used += credits; console.log(JSON.stringify({ ...page, jobId: job.id, creditsRemainingBefore: before })); if (attempts > 1 || credits > 1) await db.from("import_errors").insert({ job_id: job.id, unit_id: unit.id, error_code: "extra_credit_charge", message: `${unit.exam_slug} ${unit.exam_year} page ${pageNumber}: attempts ${attempts}, credits ${credits}` });
         const saved: any = questions.length ? await deps.saveQuestions(store, questions, { examType: unit.exam_slug, year: unit.exam_year, jobId: job.id }) : { inserted: 0, updated: 0, skipped: 0, quarantined: 0, rejected: 0, failed: 0 }; if ((saved.failed ?? 0) > 0) throw new Error(`saving page ${pageNumber} failed for ${saved.failed} question(s)`);
         totals.discovered_count += fetched; totals.inserted_count += saved.inserted ?? 0; totals.updated_count += saved.updated ?? 0; totals.skipped_count += saved.skipped ?? 0; totals.quarantined_count += saved.quarantined ?? 0; totals.rejected_count += (saved.rejected ?? 0) + invalid.length; summary.discovered += fetched; summary.inserted += saved.inserted ?? 0; summary.updated += saved.updated ?? 0; summary.quarantined += saved.quarantined ?? 0; summary.skipped = (summary.skipped ?? 0) + (saved.skipped ?? 0); summary.rejected = (summary.rejected ?? 0) + (saved.rejected ?? 0) + invalid.length;
