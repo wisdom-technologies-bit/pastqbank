@@ -92,8 +92,10 @@ export function parseYearCatalog(payload: unknown, year: number): CatalogEntry[]
   for (const r of rows) {
     const subject = str(r.subject ?? r.slug ?? r.name);
     if (!subject) continue;
-    const by = r.byExam ?? r.exams ?? r.examTypes ?? r.breakdown;
-    if (by && typeof by === "object") {
+    const by = [r.breakdown, r.byExam, r.exams, r.examTypes].find(
+      (x) => x && typeof x === "object" && !Array.isArray(x),
+    );
+    if (by) {
       for (const [k, v] of Object.entries(by as Record<string, unknown>)) {
         const exam = toExam(k);
         const count = Number(typeof v === "object" && v ? (v as any).count ?? (v as any).questionCount : v);
