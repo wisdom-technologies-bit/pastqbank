@@ -47,7 +47,7 @@ export async function runSlice(options: { jobId?: string; budgetMs?: number } = 
     for (const row of counts.data ?? []) { const exam = row.exams?.slug; const subject = row.subjects?.slug; if (exam && subject) { const key = `${exam}:${row.exam_year}:${subject}`; haveMap.set(key, (haveMap.get(key) ?? 0) + 1); } }
     const plan = buildPlan(catalog, (exam, year, subject) => haveMap.get(`${exam}:${year}:${subject}`) ?? 0, { startYear: parsedScope.data.startYear, endYear: parsedScope.data.endYear, exams: parsedScope.data.examTypes.filter((e): e is ExamSlug => e !== "state") });
     const rows = plan.map((u) => ({ job_id: job.id, exam_slug: u.exam, exam_year: u.year, subject_slug: u.subject, status: u.needed ? "queued" : "skipped" }));
-    for (let i = 0; i < rows.length; i += 200) { const r = await db.from("import_units").insert(rows.slice(i, i + 200)); if (r.error) throw r.error; }
+    for (let i = 0; i < rows.length; i += 200) { const r = await db.from("import_units").upsert(rows.slice(i, i + 200), { onConflict: "job_id,exam_slug,exam_year", ignoreDuplicates: true }); if (r.error) throw r.error; }
     const summaryField = "summary" in job ? { summary: planSummary(plan) } : "metadata" in job ? { metadata: { ...(job.metadata ?? {}), plan: planSummary(plan) } } : {};
     if (Object.keys(summaryField).length) await update(db, "import_jobs", job.id, summaryField);
     units = await loadUnits();
