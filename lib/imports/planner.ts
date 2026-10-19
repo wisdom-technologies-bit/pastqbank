@@ -7,10 +7,10 @@ export const EXAM_ORDER: ExamSlug[] = ["jamb", "waec", "neco", "post_utme"];
 
 /** Observed real coverage. Years outside a window are skipped for free. */
 export const COVERAGE: Record<ExamSlug, { from: number; to: number }> = {
-  jamb: { from: 1978, to: 2100 },
-  waec: { from: 1988, to: 2021 },
-  neco: { from: 2012, to: 2019 },
-  post_utme: { from: 2006, to: 2013 },
+  jamb: { from: 1970, to: 2100 },
+  waec: { from: 1970, to: 2100 },
+  neco: { from: 1970, to: 2100 },
+  post_utme: { from: 1970, to: 2100 },
 };
 
 export function inCoverage(exam: ExamSlug, year: number): boolean {
