@@ -1,5 +1,12 @@
 # PastQ Bank catalog API
 
+## Sessions
+All session endpoints use the service key. Except creation, they require `X-User-Ref`, which must match the opaque owner or return 404. Responses use `{data,meta}` or `{error:{code,message,details?}}`; responses are private and never expose answers, raw payload, provenance, or source ids.
+
+`POST /api/v1/sessions` accepts `{user_ref,tier,mode,exam,year,subjects:[{slug,question_count?}],minutes?,order?,feedback?,missing_compulsory?}`. `POST /api/v1/sessions/:id/start` starts it idempotently. `GET /api/v1/sessions/:id` returns its summary. `GET /api/v1/sessions/:id/questions?from=1&limit=30` returns up to 60 presented questions and passage HTML. Errors include `invalid_config`, `premium_required`, `compulsory_subject_missing`, `not_enough_questions`, `too_many_active_sessions`, `not_started`, `session_finished`, and `not_found`.
+
+Free sessions are restricted to the latest configured free years; mixed drills use only those years. If compulsory English is absent for a CBT year, the client may skip it or borrow from the nearest qualifying donor year; borrowing is premium-only when that donor year is not free.
+
 All endpoints are server-to-server `GET` requests under `/api/v1`. Send `Authorization: Bearer <BANK_SERVICE_KEY>`. Responses use `{ data, meta: { generatedAt } }`; errors use `{ error: { code, message } }`. Responses are private and never cached. Catalog data contains metadata and counts only—never question text, options, answers, or payloads. `post-utme` is canonical; `post_utme` is accepted in URL parameters.
 
 ## Endpoints
