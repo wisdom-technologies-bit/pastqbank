@@ -9,7 +9,12 @@ export function cbtEligibility(profile: CatalogProfile, subjectCountsForYear: Ma
   if (profile.compulsory_subject_slug) {
     const count = subjectCountsForYear.get(profile.compulsory_subject_slug) ?? 0
     const needed = Math.ceil(requiredCount(profile, profile.compulsory_subject_slug) * settings.qualify_ratio)
-    if (count < needed) return { eligible: false, qualifyingSubjects, reason: `${profile.compulsory_subject_slug === 'english-language' ? 'English Language' : profile.compulsory_subject_slug} has ${count} questions, ${needed} needed` }
+    if (count < needed) {
+      const missing = count === 0 && qualifyingSubjects.length >= profile.subjects_required - 1
+      if (!missing) return { eligible: false, qualifyingSubjects, reason: `${profile.compulsory_subject_slug === 'english-language' ? 'English Language' : profile.compulsory_subject_slug} has ${count} questions, ${needed} needed` }
+      const eligible = qualifyingSubjects.length >= profile.subjects_required - 1
+      return { eligible, qualifyingSubjects, missingCompulsory: profile.compulsory_subject_slug, reason: eligible ? undefined : `${qualifyingSubjects.length} qualifying subjects, ${profile.subjects_required - 1} needed` }
+    }
   }
   const eligible = qualifyingSubjects.length >= profile.subjects_required
   return { eligible, qualifyingSubjects, reason: eligible ? undefined : `${qualifyingSubjects.length} qualifying subjects, ${profile.subjects_required} needed` }
