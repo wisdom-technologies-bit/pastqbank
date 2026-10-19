@@ -7,7 +7,7 @@ const serverEnvSchema = z.object({
   NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   CRON_SECRET: z.string().min(16),
-  BANK_SERVICE_API_KEY: z.string().min(32),
+  BANK_SERVICE_API_KEY: z.string().min(32).optional(),
   ALOC_BASE_URL: z.string().url().default("https://dev.aloc.com.ng/api/v1"),
   ALOC_LOW_CREDIT_THRESHOLD: z.coerce.number().int().default(5),
 });

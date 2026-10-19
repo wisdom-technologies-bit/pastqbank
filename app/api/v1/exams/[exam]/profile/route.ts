@@ -1,0 +1,2 @@
+import { catalogContext,envelope } from '@/lib/catalog/service'; import { error,guard,json } from '@/lib/catalog/http'
+export async function GET(request:Request,{params}:{params:Promise<{exam:string}>}){const denied=guard(request);if(denied)return denied;const {exam}=await params;const c=await catalogContext(exam);if(!c)return error('not_found','Unknown exam',404);return json(envelope({...c.rawProfile,subjects:c.overrides}))}
