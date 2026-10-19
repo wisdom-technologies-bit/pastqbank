@@ -41,31 +41,30 @@ export async function runSlice(options: { jobId?: string; budgetMs?: number } = 
   const nextPlanYear = job.plan_cursor_year == null ? parsedScope.data.startYear : job.plan_cursor_year;
   const planningFinished = nextPlanYear < parsedScope.data.endYear;
   if (!planningFinished) {
-    const years: number[] = [];
-    for (let year = nextPlanYear; year >= parsedScope.data.endYear && years.length < 8; year--) years.push(year);
-    const catalog: CatalogEntry[] = [];
-    try {
-      for (let i = 0; i < years.length; i++) {
-        if (i > 0) await deps.sleep(PACE_MS);
-        if (deps.now() - sliceStart + HEADROOM_MS >= budgetMs) { await setIfRunning({ status: "queued" }); summary.stoppedBecause = "budget"; return summary; }
-        catalog.push(...await deps.fetchYearCatalog(years[i]));
+    const exams = parsedScope.data.examTypes.filter((e): e is ExamSlug => e !== "state");
+    let cursorYear: number = nextPlanYear; let plannedThisSlice = 0;
+    while (cursorYear >= parsedScope.data.endYear && plannedThisSlice < 8) {
+      if (plannedThisSlice > 0) await deps.sleep(PACE_MS);
+      if (deps.now() - sliceStart + HEADROOM_MS >= budgetMs) break;
+      let catalog: CatalogEntry[];
+      try { catalog = await deps.fetchYearCatalog(cursorYear); }
+      catch (error) {
+        if (error instanceof AlocRateLimitedError) { await setIfRunning({ status: "queued" }); summary.stoppedBecause = "rate_limited"; return summary; }
+        throw error;
       }
-    } catch (error) {
-      if (error instanceof AlocRateLimitedError) { await setIfRunning({ status: "queued" }); summary.stoppedBecause = "rate_limited"; return summary; }
-      throw error;
+      const haveMap = new Map<string, number>();
+      for (let from = 0; ; from += 1000) {
+        const r = await db.from("questions").select("exam_year, exams!inner(slug), subjects!inner(slug)").eq("exam_year", cursorYear).range(from, from + 999);
+        if (r.error) throw r.error;
+        for (const row of r.data ?? []) { const e = row.exams?.slug; const s = row.subjects?.slug; if (e && s) { const k = `${e}:${row.exam_year}:${s}`; haveMap.set(k, (haveMap.get(k) ?? 0) + 1); } }
+        if ((r.data ?? []).length < 1000) break;
+      }
+      const plan = buildPlan(catalog, (exam, year, subject) => haveMap.get(`${exam}:${year}:${subject}`) ?? 0, { startYear: cursorYear, endYear: cursorYear, exams });
+      const rows = plan.map((u) => ({ job_id: job.id, exam_slug: u.exam, exam_year: u.year, subject_slug: u.subject, status: u.needed ? "queued" : "skipped" }));
+      if (rows.length) { const ins = await db.from("import_units").insert(rows); if (ins.error) throw ins.error; }
+      cursorYear -= 1; plannedThisSlice += 1;
+      await update(db, "import_jobs", job.id, { plan_cursor_year: cursorYear });
     }
-    const counts = await db.from("questions").select("exam_year, exams!inner(slug), subjects!inner(slug)").in("exam_year", years);
-    if (counts.error) throw counts.error;
-    const haveMap = new Map<string, number>();
-    for (const row of counts.data ?? []) { const exam = row.exams?.slug; const subject = row.subjects?.slug; if (exam && subject) { const key = `${exam}:${row.exam_year}:${subject}`; haveMap.set(key, (haveMap.get(key) ?? 0) + 1); } }
-    const plan = buildPlan(catalog, (exam, year, subject) => haveMap.get(`${exam}:${year}:${subject}`) ?? 0, { startYear: years[0], endYear: years[years.length - 1], exams: parsedScope.data.examTypes.filter((e): e is ExamSlug => e !== "state") });
-    const rows = plan.map((u) => ({ job_id: job.id, exam_slug: u.exam, exam_year: u.year, subject_slug: u.subject, status: u.needed ? "queued" : "skipped" }));
-    for (let i = 0; i < rows.length; i += 200) { const r = await db.from("import_units").insert(rows.slice(i, i + 200)); if (r.error) throw r.error; }
-    const cursor = years[years.length - 1] - 1;
-    const summaryField = "summary" in job ? { summary: planSummary(plan) } : "metadata" in job ? { metadata: { ...(job.metadata ?? {}), plan: planSummary(plan) } } : {};
-    await update(db, "import_jobs", job.id, { plan_cursor_year: cursor, ...summaryField });
-    const insertedUnits = await loadUnits();
-    if (insertedUnits.length !== rows.length) throw new Error(`Plan unit insertion mismatch: expected ${rows.length}, found ${insertedUnits.length}`);
     await setIfRunning({ status: "queued" }); summary.stoppedBecause = "planning"; return summary;
   }
   if (!units.length) units = await loadUnits();
