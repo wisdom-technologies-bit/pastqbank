@@ -38,20 +38,37 @@ export async function runSlice(options: { jobId?: string; budgetMs?: number } = 
   const setIfRunning = async (patch: Record<string, unknown>) => { const r = await db.from("import_jobs").update(patch).eq("id", job.id).eq("status", "running"); if (r.error) throw r.error; };
   const parsedScope = ImportScopeSchema.safeParse(job.scope); if (!parsedScope.success) { await setIfRunning({ status: "failed", error_summary: "Invalid import scope", completed_at: iso() }); summary.stoppedBecause = "failed"; return summary; }
   const cap = parsedScope.data.maxCredits ?? null; const loadUnits = async () => { const r = await db.from("import_units").select("*").eq("job_id", job.id); if (r.error) throw r.error; return (r.data ?? []) as any[]; }; let units = await loadUnits();
-  if (!units.length) {
+  const nextPlanYear = job.plan_cursor_year == null ? parsedScope.data.startYear : job.plan_cursor_year;
+  const planningFinished = nextPlanYear < parsedScope.data.endYear;
+  if (!planningFinished) {
+    const years: number[] = [];
+    for (let year = nextPlanYear; year >= parsedScope.data.endYear && years.length < 8; year--) years.push(year);
     const catalog: CatalogEntry[] = [];
-    for (let year = parsedScope.data.startYear; year >= parsedScope.data.endYear; year--) catalog.push(...await deps.fetchYearCatalog(year));
-    const counts = await db.from("questions").select("exam_year, exams!inner(slug), subjects!inner(slug)").in("exam_year", Array.from({ length: parsedScope.data.startYear - parsedScope.data.endYear + 1 }, (_, i) => parsedScope.data.startYear - i));
+    try {
+      for (let i = 0; i < years.length; i++) {
+        if (i > 0) await deps.sleep(PACE_MS);
+        if (deps.now() - sliceStart + HEADROOM_MS >= budgetMs) { await setIfRunning({ status: "queued" }); summary.stoppedBecause = "budget"; return summary; }
+        catalog.push(...await deps.fetchYearCatalog(years[i]));
+      }
+    } catch (error) {
+      if (error instanceof AlocRateLimitedError) { await setIfRunning({ status: "queued" }); summary.stoppedBecause = "rate_limited"; return summary; }
+      throw error;
+    }
+    const counts = await db.from("questions").select("exam_year, exams!inner(slug), subjects!inner(slug)").in("exam_year", years);
     if (counts.error) throw counts.error;
     const haveMap = new Map<string, number>();
     for (const row of counts.data ?? []) { const exam = row.exams?.slug; const subject = row.subjects?.slug; if (exam && subject) { const key = `${exam}:${row.exam_year}:${subject}`; haveMap.set(key, (haveMap.get(key) ?? 0) + 1); } }
-    const plan = buildPlan(catalog, (exam, year, subject) => haveMap.get(`${exam}:${year}:${subject}`) ?? 0, { startYear: parsedScope.data.startYear, endYear: parsedScope.data.endYear, exams: parsedScope.data.examTypes.filter((e): e is ExamSlug => e !== "state") });
+    const plan = buildPlan(catalog, (exam, year, subject) => haveMap.get(`${exam}:${year}:${subject}`) ?? 0, { startYear: years[0], endYear: years[years.length - 1], exams: parsedScope.data.examTypes.filter((e): e is ExamSlug => e !== "state") });
     const rows = plan.map((u) => ({ job_id: job.id, exam_slug: u.exam, exam_year: u.year, subject_slug: u.subject, status: u.needed ? "queued" : "skipped" }));
-    for (let i = 0; i < rows.length; i += 200) { const r = await db.from("import_units").upsert(rows.slice(i, i + 200), { onConflict: "job_id,exam_slug,exam_year", ignoreDuplicates: true }); if (r.error) throw r.error; }
+    for (let i = 0; i < rows.length; i += 200) { const r = await db.from("import_units").insert(rows.slice(i, i + 200)); if (r.error) throw r.error; }
+    const cursor = years[years.length - 1] - 1;
     const summaryField = "summary" in job ? { summary: planSummary(plan) } : "metadata" in job ? { metadata: { ...(job.metadata ?? {}), plan: planSummary(plan) } } : {};
-    if (Object.keys(summaryField).length) await update(db, "import_jobs", job.id, summaryField);
-    units = await loadUnits();
+    await update(db, "import_jobs", job.id, { plan_cursor_year: cursor, ...summaryField });
+    const insertedUnits = await loadUnits();
+    if (insertedUnits.length !== rows.length) throw new Error(`Plan unit insertion mismatch: expected ${rows.length}, found ${insertedUnits.length}`);
+    await setIfRunning({ status: "queued" }); summary.stoppedBecause = "planning"; return summary;
   }
+  if (!units.length) units = await loadUnits();
   const totals = { discovered_count: job.discovered_count ?? 0, inserted_count: job.inserted_count ?? 0, updated_count: job.updated_count ?? 0, skipped_count: job.skipped_count ?? 0, quarantined_count: job.quarantined_count ?? 0, rejected_count: job.rejected_count ?? 0, requests_made: job.requests_made ?? 0, credits_used: job.credits_used ?? 0 }; const writeTotals = () => update(db, "import_jobs", job.id, totals); const store = deps.createStore(db); let lastRequestAt = 0;
   for (const unit of sortUnits(units.filter((u) => !FINISHED.includes(u.status)))) {
     while (!FINISHED.includes(unit.status)) {
