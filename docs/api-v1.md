@@ -19,6 +19,13 @@ All endpoints are server-to-server `GET` requests under `/api/v1`. Send `Authori
 
 Unknown exams or years return 404 `not_found`; malformed years return 400 `bad_input`; missing or invalid credentials return 401, and an unconfigured service key returns 503.
 
+## Session execution endpoints
+
+- `PUT /sessions/{id}/answers` saves 1–60 answers; `POST /sessions/{id}/submit` finalizes idempotently.
+- `GET /sessions/{id}/result` returns the stored score; `GET /sessions/{id}/review?from=&limit=` returns the submitted review.
+- `POST /sessions/{id}/reports` records typo, wrong-answer, missing-option, bad-image, garbled-passage, or other reports.
+- `GET|POST /api/cron/expire-sessions` requires `Authorization: Bearer CRON_SECRET` and expires due sessions.
+
 ## Rules
 
 A year is listable when its total published question count is at least `min_questions_for_listing` (default 10). Free years are computed independently for each exam body from listable years sorted newest first; the first `free_year_count` (default 2) are free. A subject's required count is its profile override when present, otherwise the profile default. A subject qualifies when its published count is at least `ceil(required_count * qualify_ratio)` (default ratio 0.9). A year is CBT eligible when its compulsory subject qualifies, if one is configured, and at least `subjects_required` subjects qualify. Practice readiness uses `min_questions_for_practice` (default 5).
