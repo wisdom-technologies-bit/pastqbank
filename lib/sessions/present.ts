@@ -35,5 +35,5 @@ export function questionContent(q: any) {
 
 export function presentQuestion(q: any, firstInPage = true) {
   const content = questionContent(q)
-  return { position: q.position, ref: q.ref, subject: q.subject_slug, subject_number: q.subject_number, text: content.text, options: content.options, image_url: content.imageUrl, instruction: q.has_passage ? null : toPlainText(q.section), passage: firstInPage ? content.passage : null, passage_key: q.passage_key }
+  return { number: q.position, position: q.position, ref: q.ref, subject: q.subject_slug, subject_number: q.subject_number, text: content.text, options: content.options, image_url: content.imageUrl, instruction: q.has_passage ? null : toPlainText(q.section), passage: firstInPage ? content.passage : null, passage_key: q.passage_key }
 }

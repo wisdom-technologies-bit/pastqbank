@@ -22,7 +22,7 @@ Unknown exams or years return 404 `not_found`; malformed years return 400 `bad_i
 ## Session execution endpoints
 
 - `PUT /sessions/{id}/answers` saves 1–60 answers; `POST /sessions/{id}/submit` finalizes idempotently.
-- `GET /sessions/{id}/result` returns the stored score; `GET /sessions/{id}/review?from=&limit=` returns the submitted review.
+- `GET /sessions/{id}/result` returns the stored score; `GET /sessions/{id}/review?from=&limit=` returns the submitted review. Paging is 1-based: `from=1` starts at question 1, and every question item includes its 1-based `number` in session order. The same `from` contract applies to `/sessions/{id}/questions`.
 - `POST /sessions/{id}/reports` records typo, wrong-answer, missing-option, bad-image, garbled-passage, or other reports.
 - `GET|POST /api/cron/expire-sessions` requires `Authorization: Bearer CRON_SECRET` and expires due sessions.
 

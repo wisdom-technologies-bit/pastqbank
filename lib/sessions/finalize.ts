@@ -3,7 +3,7 @@ import { questionContent, normalizeChoice } from '@/lib/sessions/present'
 
 async function computeResult(id: string) {
   const db = getAdminSupabaseClient()
-  const { data: session } = await db.from('exam_sessions').select('id,status,started_at,exam_slug,config').eq('id', id).maybeSingle()
+  const { data: session } = await db.from('exam_sessions').select('id,status,started_at,exam_slug,config,result').eq('id', id).maybeSingle()
   if (!session) return null
   const { data: rows } = await db.from('exam_session_questions').select('question_id,subject_slug').eq('session_id', id).order('position')
   const ids = (rows ?? []).map((r: any) => r.question_id)
@@ -33,10 +33,11 @@ async function computeResult(id: string) {
 }
 
 export async function finalizeSession(id: string, expired = false) {
-  const db = getAdminSupabaseClient(); const { data: session } = await db.from('exam_sessions').select('status,config').eq('id', id).maybeSingle(); if (!session) return null
+  const db = getAdminSupabaseClient(); const { data: session } = await db.from('exam_sessions').select('status,result').eq('id', id).maybeSingle(); if (!session) return null
+  const stored = session.result as any
+  if (stored) return stored
   const result = await computeResult(id); if (!result) return null
-  const stored = (session.config as any)?.result
-  const update: any = { score: result.correct, max_score: result.total, config: { ...(session.config as any), result } }
+  const update: any = { score: result.correct, max_score: result.total, result }
   if (session.status !== 'submitted' && session.status !== 'expired') Object.assign(update, { status: expired ? 'expired' : 'submitted', submitted_at: new Date().toISOString() })
   if (JSON.stringify(stored) !== JSON.stringify(result) || update.status) await db.from('exam_sessions').update(update).eq('id', id)
   return result
