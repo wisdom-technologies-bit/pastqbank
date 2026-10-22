@@ -15,6 +15,12 @@ export async function markAnswers(sessionId: string, answers: Array<{ ref: strin
     if (!questionId) throw new Error('invalid_question_ref')
     const q = questionMap.get(questionId)
     const correct = questionContent(q).correctChoice
+    const flagOnly = !Object.prototype.hasOwnProperty.call(answer, 'choice')
+    if (flagOnly) {
+      const { error } = await db.from('exam_session_answers').upsert({ session_id: sessionId, question_id: questionId, is_flagged: Boolean(answer.flagged), updated_at: new Date().toISOString() }, { onConflict: 'session_id,question_id' })
+      if (error) throw error
+      continue
+    }
     const choice = answer.choice === null ? null : normalizeChoice(answer.choice, q?.options ?? q?.raw_payload?.options)
     const { data: existing } = await db.from('exam_session_answers').select('selected_option').eq('session_id', sessionId).eq('question_id', questionId).maybeSingle()
     if (mode !== 'cbt' && existing?.selected_option !== null && existing?.selected_option !== undefined) throw new Error('already_answered')
