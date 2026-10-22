@@ -108,10 +108,10 @@ Idempotent. Moves status to `in_progress` and, for timed sessions, sets the serv
 Summary of the session: same fields as above, plus `progress:{answered,total,flagged}` and `result_available`.
 
 ### GET /sessions/{id}/questions?from=1&limit=30
-Up to 60 per call; session must be started (`not_started`) and not finished (`session_finished`). Each item has: `ref` (opaque id used for answers), `number`, `subject`, `passage` (object or null; passage HTML is included for passage questions), `question:{text, image_url?}`, `options:[{key:"A",text:"..."}]`, and the student's saved `your_choice` and `flagged` when present. Answers are never included here. Question text and passages may contain simple HTML; sanitise before rendering.
+Up to 60 per call; session must be started (`not_started`) and not finished (`session_finished`). Each item has: `ref` (opaque id used for answers), `number`, `subject`, `passage` (object or null; passage HTML is included for passage questions), `question:{text, image_url?}`, `options:[{key:"A",text:"..."}]`, and the student's saved `your_choice` and `flagged` when present. Flag-only updates are reflected here and in `progress.flagged`. Answers are never included here. Question text and passages may contain simple HTML; sanitise before rendering.
 
 ### PUT /sessions/{id}/answers
-Body: `{"answers":[{"ref":"<question ref>","choice":"A","flagged":false}]}` with 1 to 60 items. A `null` choice clears an answer (CBT only).
+Body: `{"answers":[{"ref":"<question ref>","choice":"A","flagged":false}]}` with 1 to 60 items. An item may omit `choice` (the key must be absent, not `null`) when it contains a boolean `flagged`; this updates only the flag in both modes, preserves any saved answer, does not lock an unanswered instant-mode question, and reveals no correctness. A `null` choice clears an answer (CBT only).
 - Instant (practice) mode: the first answer to a question is locked (later changes return 409 `already_answered`) and the response reveals it: `{"data":{"answers":[{"ref","is_correct":true,"correct_choice":"C"}]}}`.
 - CBT mode: `{"data":{"saved":1}}` only, with no correctness at all until the session is submitted.
 - Other errors: 409 `session_closed`, 422 `invalid_question_ref`, 422 `invalid_choice`, 429 on rate limit.
