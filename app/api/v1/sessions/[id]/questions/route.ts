@@ -15,12 +15,13 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   const qids = (refs ?? []).map(x => x.question_id)
   const [{ data: qs }, { data: answers }] = await Promise.all([
     db.from('questions').select('id,text,options,image_url,section,has_passage,question_number,passage_key').in('id', qids),
-    db.from('exam_session_answers').select('question_id,is_flagged').eq('session_id', id).in('question_id', qids),
+    db.from('exam_session_answers').select('question_id,is_flagged,revealed_at').eq('session_id', id).in('question_id', qids),
   ])
   const flags = new Map((answers ?? []).map(a => [a.question_id, Boolean(a.is_flagged)]))
+  const reveals = new Map((answers ?? []).map(a => [a.question_id, Boolean(a.revealed_at)]))
   const items = (refs ?? []).map(r => {
     const q = (qs ?? []).find(x => x.id === r.question_id); if (!q) return null
-    return { ...presentQuestion({ ...q, ref: r.id, position: r.position, subject_slug: r.subject_slug, subject_number: r.subject_number }, !(refs ?? []).some(x => x.position < r.position && x.passage_key && x.passage_key === r.passage_key)), flagged: flags.get(r.question_id) ?? false }
+    return { ...presentQuestion({ ...q, ref: r.id, position: r.position, subject_slug: r.subject_slug, subject_number: r.subject_number }, !(refs ?? []).some(x => x.position < r.position && x.passage_key && x.passage_key === r.passage_key)), flagged: flags.get(r.question_id) ?? false, revealed: reveals.get(r.question_id) ?? false }
   }).filter(Boolean)
   return json({ data: items, meta: { from, limit, generatedAt: new Date().toISOString() } })
 }

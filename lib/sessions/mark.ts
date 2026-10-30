@@ -22,8 +22,10 @@ export async function markAnswers(sessionId: string, answers: Array<{ ref: strin
       continue
     }
     const choice = answer.choice === null ? null : normalizeChoice(answer.choice, q?.options ?? q?.raw_payload?.options)
-    const { data: existing } = await db.from('exam_session_answers').select('selected_option').eq('session_id', sessionId).eq('question_id', questionId).maybeSingle()
-    if (mode !== 'cbt' && existing?.selected_option !== null && existing?.selected_option !== undefined) throw new Error('already_answered')
+    const { data: existing } = await db.from('exam_session_answers').select('selected_option,revealed_at').eq('session_id', sessionId).eq('question_id', questionId).maybeSingle()
+    const unanswered = existing?.selected_option === null || existing?.selected_option === undefined
+    if (mode !== 'cbt' && existing?.revealed_at && unanswered) throw new Error('already_revealed')
+    if (mode !== 'cbt' && !unanswered) throw new Error('already_answered')
     const isCorrect = choice !== null && correct !== null && choice === correct
     const payload = { session_id: sessionId, question_id: questionId, selected_option: choice, is_correct: isCorrect, is_flagged: Boolean(answer.flagged), answered_at: choice === null ? null : new Date().toISOString(), updated_at: new Date().toISOString() }
     const { error } = await db.from('exam_session_answers').upsert(payload, { onConflict: 'session_id,question_id' })

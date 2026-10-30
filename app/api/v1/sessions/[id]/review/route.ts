@@ -15,8 +15,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   const ids = (rows ?? []).map((r: any) => r.question_id)
   const [{ data: questions }, { data: answers }] = await Promise.all([
     db.from('questions').select('*').in('id', ids),
-    db.from('exam_session_answers').select('question_id,selected_option,is_flagged').eq('session_id', id).in('question_id', ids),
+    db.from('exam_session_answers').select('question_id,selected_option,is_flagged,revealed_at').eq('session_id', id).in('question_id', ids),
   ])
   const qm = new Map((questions ?? []).map((q: any) => [q.id, q])), am = new Map((answers ?? []).map((a: any) => [a.question_id, a]))
-  return json({ data: (rows ?? []).map((row: any) => { const q = qm.get(row.question_id), a = am.get(row.question_id), content = questionContent(q), choice = normalizeChoice(a?.selected_option, q?.options ?? q?.raw_payload?.options); return { ref: row.id, number: row.position, subject: row.subject_slug, passage: content.passage, question: { text: content.text, image_url: content.imageUrl }, options: content.options, your_choice: choice, correct_choice: content.correctChoice, is_correct: choice !== null && content.correctChoice !== null && choice === content.correctChoice, flagged: Boolean(a?.is_flagged) } }), meta: { from, limit, generatedAt: new Date().toISOString() } })
+  return json({ data: (rows ?? []).map((row: any) => { const q = qm.get(row.question_id), a = am.get(row.question_id), content = questionContent(q), choice = normalizeChoice(a?.selected_option, q?.options ?? q?.raw_payload?.options); return { ref: row.id, number: row.position, subject: row.subject_slug, passage: content.passage, question: { text: content.text, image_url: content.imageUrl }, options: content.options, your_choice: choice, correct_choice: content.correctChoice, is_correct: choice !== null && content.correctChoice !== null && choice === content.correctChoice, flagged: Boolean(a?.is_flagged), revealed: Boolean(a?.revealed_at && !choice), explanation: q?.explanation || null } }), meta: { from, limit, generatedAt: new Date().toISOString() } })
 }
