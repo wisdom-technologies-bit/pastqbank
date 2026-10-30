@@ -108,13 +108,45 @@ Idempotent. Moves status to `in_progress` and, for timed sessions, sets the serv
 Summary of the session: same fields as above, plus `progress:{answered,total,flagged}` and `result_available`.
 
 ### GET /sessions/{id}/questions?from=1&limit=30
-Up to 60 per call; session must be started (`not_started`) and not finished (`session_finished`). Each item has: `ref` (opaque id used for answers), `number`, `subject`, `passage` (object or null; passage HTML is included for passage questions), `question:{text, image_url?}`, `options:[{key:"A",text:"..."}]`, and the student's saved `your_choice` and `flagged` when present. Answers are never included here. Question text and passages may contain simple HTML; sanitise before rendering.
+Up to 60 per call; session must be started (`not_started`) and not finished (`session_finished`). Items are **flat** (question text and image are NOT nested under `question`):
+```json
+{"ref":"uuid","number":1,"position":1,"subject":"mathematics","subject_number":1,
+ "text":"Simplify 12/3 + 4 ...","image_url":null,"instruction":"Answer all questions",
+ "options":[{"key":"A","text":"148 m"}],"passage":null,"passage_key":null,
+ "flagged":false,"revealed":false}
+```
+- `ref` is the opaque id used for answers, reveals and reports. `number` and `position` are both the 1-based session order.
+- `image_url` is always a string or null; when present it is an absolute HTTPS URL hosted by the source.
+- `instruction` is the shared section instruction for non-passage questions, otherwise null. `passage` is `{html, range}` or null, and `passage_key` groups questions that share a passage.
+- `flagged` and `revealed` are always booleans: `true` when the student flagged the question, and `true` when the correct answer was revealed for it.
+- Answers are never included here: no `your_choice`, `correct_choice` or `explanation`. Question text and passages may contain simple HTML; sanitise before rendering.
 
 ### PUT /sessions/{id}/answers
-Body: `{"answers":[{"ref":"<question ref>","choice":"A","flagged":false}]}` with 1 to 60 items. An item with `flagged` and no `choice` updates only the flag in either mode; it does not answer or lock the question. A `null` choice clears an answer (CBT only). `question.image_url` is always a string or null and, when present, is an absolute HTTPS URL hosted by the source.
+Body: `{"answers":[{"ref":"<question ref>","choice":"A","flagged":false}]}` with 1 to 60 items. An item with `flagged` and no `choice` updates only the flag in either mode; it does not answer or lock the question. A `null` choice clears an answer (CBT only).
 - Instant (practice) mode: the first answer to a question is locked (later changes return 409 `already_answered`) and the response reveals it: `{"data":{"answers":[{"ref","is_correct":true,"correct_choice":"C"}]}}`.
 - CBT mode: `{"data":{"saved":1}}` only, with no correctness at all until the session is submitted.
+- Answering a question whose answer was revealed (see the reveal route) returns 409 `already_revealed`.
 - Other errors: 409 `session_closed`, 422 `invalid_question_ref`, 422 `invalid_choice`, 429 on rate limit.
+
+### POST /sessions/{id}/reveal
+Lets a student see the correct answer to a practice question without answering it. Body: `{"ref":"<question ref>"}`.
+- Only for a session that is `in_progress`, `mode: "practice"` and `feedback_mode: "instant"`; anything else returns 409 `reveal_not_allowed`.
+- `ref` must belong to the session, otherwise 422 `invalid_question_ref`.
+- A revealed question stays **unanswered**: it is counted in `unanswered` in the result and is never right or wrong. A flag already on the question is kept.
+- Revealing a question twice is safe and returns the same payload. Answering a revealed question later returns 409 `already_revealed`.
+- If the question already has an answer, nothing changes and the existing answer is reported instead (`revealed: false`).
+
+```json
+{"data":{"ref":"uuid","correct_choice":"C","explanation":"Step by step ...","revealed":true},
+ "meta":{"generatedAt":"..."}}
+```
+Already answered:
+```json
+{"data":{"ref":"uuid","correct_choice":"C","explanation":null,"is_correct":true,"revealed":false},
+ "meta":{"generatedAt":"..."}}
+```
+`explanation` is null when the bank has none. This endpoint exists only in instant-feedback practice; CBT sessions never show correctness before submission.
+- Other errors: 404 `not_found`, 429 on rate limit, 500 `reveal_failed`.
 
 ### POST /sessions/{id}/submit
 Finalizes the session (idempotent; safe to retry; also works after the deadline). Returns the result.
@@ -131,10 +163,13 @@ Finalizes the session (idempotent; safe to retry; also works after the deadline)
 Only after submission or expiry (409 `not_submitted` otherwise). Each item:
 ```json
 {"ref":"uuid","number":1,"subject":"mathematics","passage":null,
- "question":{"text":"..."},"options":[{"key":"A","text":"148 m"}],
- "your_choice":"A","correct_choice":"C","is_correct":false,"flagged":false}
+ "question":{"text":"...","image_url":null},"options":[{"key":"A","text":"148 m"}],
+ "your_choice":"A","correct_choice":"C","is_correct":false,"flagged":false,
+ "revealed":false,"explanation":"Step by step ..."}
 ```
-Unanswered questions have `your_choice: null` and `is_correct: false`. There are no explanations.
+- Review items nest the question under `question:{text, image_url}`, unlike the flat questions list.
+- Unanswered and revealed questions have `your_choice: null` and `is_correct: false`. `revealed` is `true` when the student revealed the answer during the session.
+- `explanation` is the bank's explanation, or null when there is none.
 
 ### POST /sessions/{id}/reports
 Body: `{"ref":"<question ref>","reason":"typo|wrong_answer|missing_option|bad_image|garbled_passage|other","note":"optional text"}`. A repeated report from the same user for the same question returns 200 with `duplicate: true`. Rate-limited per user.
