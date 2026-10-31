@@ -1,9 +1,9 @@
 import { getAdminSupabaseClient } from '@/lib/supabase/admin'
 import { questionContent, normalizeChoice } from '@/lib/sessions/present'
 
-async function computeResult(id: string) {
+async function computeResult(id: string, expired = false) {
   const db = getAdminSupabaseClient()
-  const { data: session } = await db.from('exam_sessions').select('id,status,started_at,exam_slug,config,result').eq('id', id).maybeSingle()
+  const { data: session } = await db.from('exam_sessions').select('id,status,started_at,deadline_at,duration_seconds,exam_slug,config,result').eq('id', id).maybeSingle()
   if (!session) return null
   const { data: rows } = await db.from('exam_session_questions').select('question_id,subject_slug').eq('session_id', id).order('position')
   const ids = (rows ?? []).map((r: any) => r.question_id)
@@ -25,18 +25,26 @@ async function computeResult(id: string) {
     if (answerExists) { answered++; item.answered++; if (correctChoice !== null && choice === correctChoice) { correct++; item.correct++ } else item.wrong++ } else item.unanswered++
     bySubject.set(subject, item)
   }
-  const subjectsResult = [...bySubject.values()].map((item) => ({ ...item, percent: item.total ? Math.round(item.correct / item.total * 10000) / 100 : 0 }))
-  const jamb = session.exam_slug === 'jamb' && subjectsResult.length === 4
-  const score400 = jamb ? subjectsResult.reduce((sum, item) => { item.score_100 = Math.round(item.correct / item.total * 10000) / 100; return sum + item.score_100 }, 0) : null
+  const jamb = session.exam_slug === 'jamb'
+  const subjectsResult = [...bySubject.values()].map((item) => {
+    const percent = item.total ? Math.round(item.correct / item.total * 10000) / 100 : 0
+    return jamb ? { ...item, percent, score_100: percent } : { ...item, percent }
+  })
+  const score400 = jamb && subjectsResult.length === 4 ? Math.round(subjectsResult.reduce((sum, item) => sum + item.score_100, 0) * 100) / 100 : null
   const total = (rows ?? []).length
-  return { total, answered, correct, wrong: answered - correct, unanswered: total - answered, percent: total ? Math.round(correct / total * 10000) / 100 : 0, time_used_seconds: Math.max(0, Math.round((Date.now() - new Date(session.started_at ?? Date.now()).getTime()) / 1000)), subjects: subjectsResult, score_400: score400 }
+  const startedAt = session.started_at ? new Date(session.started_at).getTime() : Date.now()
+  const deadline = session.deadline_at ? new Date(session.deadline_at).getTime() : null
+  const endedAt = (expired || session.status === 'expired') && deadline !== null ? Math.min(Date.now(), deadline) : Date.now()
+  const elapsed = Math.max(0, Math.round((endedAt - startedAt) / 1000))
+  const timeUsed = session.duration_seconds ? Math.min(elapsed, Number(session.duration_seconds)) : elapsed
+  return { total, answered, correct, wrong: answered - correct, unanswered: total - answered, percent: total ? Math.round(correct / total * 10000) / 100 : 0, time_used_seconds: timeUsed, subjects: subjectsResult, score_400: score400 }
 }
 
 export async function finalizeSession(id: string, expired = false) {
   const db = getAdminSupabaseClient(); const { data: session } = await db.from('exam_sessions').select('status,result').eq('id', id).maybeSingle(); if (!session) return null
   const stored = session.result as any
   if (stored) return stored
-  const result = await computeResult(id); if (!result) return null
+  const result = await computeResult(id, expired); if (!result) return null
   const update: any = { score: result.correct, max_score: result.total, result }
   if (session.status !== 'submitted' && session.status !== 'expired') Object.assign(update, { status: expired ? 'expired' : 'submitted', submitted_at: new Date().toISOString() })
   if (JSON.stringify(stored) !== JSON.stringify(result) || update.status) await db.from('exam_sessions').update(update).eq('id', id)
