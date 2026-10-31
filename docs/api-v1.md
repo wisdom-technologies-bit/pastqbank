@@ -92,20 +92,40 @@ Body:
  "minutes":120,"order":"...optional","feedback":"instant|end (optional)","missing_compulsory":"skip|borrow (optional)"}
 ```
 - Practice sessions default to `feedback_mode: "instant"`; CBT sessions to `"end"`.
-- Free-tier sessions are only allowed for free years (otherwise 403/422 `premium_required`). Omitting `year` creates a mixed drill drawn from the free years for free users.
-- `missing_compulsory` is used only when the CBT plan says the compulsory subject is missing.
+- Free-tier sessions are only allowed for free years (otherwise 403 `premium_required`). Omitting `year` creates a mixed drill drawn from the free years for free users.
 - Selection keeps passage questions together, so the actual `total_questions` can slightly exceed the request.
 - A user may have at most 5 active sessions (`too_many_active_sessions`).
 
-Response `data` includes: `id`, `status` ("created"), `mode`, `exam`, `year`, `tier`, `total_questions`, `duration_seconds` (null for practice), `feedback_mode`, `subjects:[{slug,name,question_count,borrowed_from_year}]`.
+Response `data` includes: `id`, `status` ("created"), `mode`, `exam`, `year`, `tier`, `total_questions`, `duration_seconds` (null for practice), `feedback_mode`, `notices`, `outline`, `subjects:[{slug,name,question_count,borrowed_from_year}]`. `borrowed_from_year` is the donor year for a borrowed compulsory subject and null otherwise.
 
-Error codes: `invalid_config`, `premium_required`, `compulsory_subject_missing`, `not_enough_questions`, `too_many_active_sessions`.
+#### CBT sessions (`mode: "cbt"`)
+A CBT is a fixed paper for one year, so `year` is required (422 `invalid_config` with `details.reason: "year_required"` otherwise). The catalog, not the client, decides what can be sat:
+- Every requested subject must qualify for that year, that is appear in `qualifyingSubjects` from `GET /exams/{exam}/years/{year}/cbt-plan` (or be the borrowed compulsory subject). Otherwise 422 `invalid_config` with `details.subjects` and `details.qualifyingSubjects`.
+- The number of subjects must be between `minSubjects` and `maxSubjects` (both the exam's `subjects_required`), otherwise 422 `invalid_config` with those bounds in `details`.
+- Question counts and minutes always come from the exam profile and per-subject overrides (`question_count` sent by the client is ignored). When a subject qualifies but has fewer questions than required, the paper takes `min(required, available)` instead of failing.
+- Order is `original` unless the client sends `order: "shuffled"`.
+- Duration comes from the profile: with `shared_timer` the whole paper gets `profile.total_minutes` (or `default_minutes`); otherwise the paper gets the sum of each requested subject's minutes override, falling back to `default_minutes` per subject. A client `minutes` value is clamped to `min_minutes`..`max_minutes`.
+
+**Compulsory subject.** When the year has the compulsory subject it must be in the request, otherwise 422 `compulsory_subject_required`. When the year has none, `missing_compulsory` decides:
+- `"skip"` (default): leave it out; the requested subjects must still be within `minSubjects`..`maxSubjects`. Asking for it is 422 `invalid_config`.
+- `"borrow"`: include it. Its questions come from the nearest year that has enough of them (the `borrow.donorYear` from the CBT plan) and those rows record `borrowed_from_year`. Including it is required (422 `compulsory_subject_required`), a donor must exist (422 `compulsory_subject_missing`), and a free-tier user cannot borrow from a premium donor year (403 `premium_required` with `details.donor_year`).
+
+Error codes: `invalid_config`, `premium_required`, `compulsory_subject_required`, `compulsory_subject_missing`, `not_enough_questions`, `too_many_active_sessions`.
 
 ### POST /sessions/{id}/start
-Idempotent. Moves status to `in_progress` and, for timed sessions, sets the server deadline. The response data includes `id`, `user_ref`, `status`, `mode`, `exam_slug`, `exam_year`, `tier`, `total_questions`, `duration_seconds`, `feedback_mode`, and the timing fields (`started_at`, `deadline_at`). The server deadline is the only authority on time.
+Idempotent. Moves status to `in_progress` and, for timed sessions, sets the server deadline. The response data includes `id`, `user_ref`, `status`, `mode`, `exam_slug`, `exam_year`, `tier`, `total_questions`, `duration_seconds`, `feedback_mode`, the timing fields (`started_at`, `deadline_at`) and `server_time` (the server clock at the moment of the response, also repeated as `meta.generatedAt`). Both the first call and a repeat call include `server_time`; the server deadline is the only authority on time, so a client should count down from `deadline_at` corrected by any clock skew against `server_time`.
 
 ### GET /sessions/{id}
-Summary of the session: same fields as above, plus `progress:{answered,total,flagged}` and `result_available`.
+Summary of the session: the same fields as above, plus `server_time`, `progress:{answered,total,flagged}`, `result_available` and `subjects` so a client can build subject tabs.
+```json
+{"data":{"id":"uuid","status":"in_progress","mode":"cbt","exam_slug":"jamb","exam_year":2025,
+ "total_questions":180,"duration_seconds":7200,"feedback_mode":"end",
+ "started_at":"...","deadline_at":"...","server_time":"...",
+ "progress":{"answered":12,"total":180,"flagged":1},"result_available":false,
+ "subjects":[{"slug":"english-language","name":"English Language","question_count":60,"first_position":1},
+             {"slug":"mathematics","name":"Mathematics","question_count":40,"first_position":61}]}}
+```
+`subjects` is in session order: `slug`, `name` (from the subjects table), `question_count` in this paper and `first_position` (the 1-based session position of its first question).
 
 ### GET /sessions/{id}/questions?from=1&limit=30
 Up to 60 per call; session must be started (`not_started`) and not finished (`session_finished`). Items are **flat** (question text and image are NOT nested under `question`):
@@ -124,7 +144,7 @@ Up to 60 per call; session must be started (`not_started`) and not finished (`se
 ### PUT /sessions/{id}/answers
 Body: `{"answers":[{"ref":"<question ref>","choice":"A","flagged":false}]}` with 1 to 60 items. An item with `flagged` and no `choice` updates only the flag in either mode; it does not answer or lock the question. A `null` choice clears an answer (CBT only).
 - Instant (practice) mode: the first answer to a question is locked (later changes return 409 `already_answered`) and the response reveals it: `{"data":{"answers":[{"ref","is_correct":true,"correct_choice":"C"}]}}`.
-- CBT mode: `{"data":{"saved":1}}` only, with no correctness at all until the session is submitted.
+- CBT mode: `{"data":{"saved":1}}` only, with no correctness at all until the session is submitted. Answers can be changed and cleared (`choice: null`) as often as the student likes until the deadline, plus the 30 second grace period for in-flight requests, after which the session returns 409 `session_closed`.
 - Answering a question whose answer was revealed (see the reveal route) returns 409 `already_revealed`.
 - Other errors: 409 `session_closed`, 422 `invalid_question_ref`, 422 `invalid_choice`, 429 on rate limit.
 
@@ -157,7 +177,11 @@ Finalizes the session (idempotent; safe to retry; also works after the deadline)
  "subjects":[{"slug":"mathematics","name":"Mathematics","total":5,"answered":1,"correct":0,"wrong":1,"unanswered":4,"percent":0}],
  "score_400":null}}
 ```
-`score_400` is only set for JAMB-style exams (each subject scaled to 100, then summed). Before submission or expiry: 409 `not_submitted`. Sessions that pass their deadline are finalized automatically by the Bank.
+- `time_used_seconds` is `started_at` to now, capped at `duration_seconds` when the paper has a timer. For a session finalized by expiry it is measured to `deadline_at`, not to the moment the Bank noticed, so it never runs past the timer.
+- `score_100` is present on each `subjects[]` item for JAMB sessions: the subject score scaled to 100 (`correct / total * 100`), the same number as that subject's `percent`.
+- `score_400` is set for JAMB sessions with 4 subjects: the sum of each subject's `score_100`, otherwise null. Other exams return neither `score_100` nor `score_400`.
+
+Before submission or expiry: 409 `not_submitted`. Sessions that pass their deadline are finalized automatically by the Bank, and `POST /sessions/{id}/submit` still works after the deadline.
 
 ### GET /sessions/{id}/review?from=1&limit=30
 Only after submission or expiry (409 `not_submitted` otherwise). Each item:
